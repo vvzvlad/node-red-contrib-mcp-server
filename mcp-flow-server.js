@@ -23,6 +23,9 @@ module.exports = function (RED)
         node.autoStart = config.autoStart || false;
         // Preserve the original (truthy-by-default) CORS behaviour.
         node.enableCors = config.enableCors === undefined ? true : config.enableCors;
+        // Optimistic ack: reply "ok" to the MCP client immediately, without waiting
+        // for an mcp-tool-response from the flow (fire-and-forget). Default off.
+        node.optimisticAck = config.optimisticAck || false;
 
         // Runtime state
         node.httpServer = null;
@@ -112,6 +115,20 @@ module.exports = function (RED)
             return new Promise((resolve, reject) =>
             {
                 const executionId = uuidv4();
+                const execMsg = {
+                    topic: 'mcp-tool-execute',
+                    payload: { toolName: tool.name, arguments: args, executionId }
+                };
+
+                // Optimistic mode: emit the command into the flow but don't wait for a
+                // response — reply "ok" right away. Any later mcp-tool-response is
+                // ignored (no pending entry registered).
+                if (node.optimisticAck)
+                {
+                    node.send(execMsg);
+                    resolve('ok');
+                    return;
+                }
 
                 const timeout = setTimeout(() =>
                 {
@@ -121,10 +138,7 @@ module.exports = function (RED)
 
                 node._pending.set(executionId, { resolve, reject, timeout });
 
-                node.send({
-                    topic: 'mcp-tool-execute',
-                    payload: { toolName: tool.name, arguments: args, executionId }
-                });
+                node.send(execMsg);
             });
         };
 

@@ -231,4 +231,62 @@ describe("Node-RED e2e: registry -> flow-server -> flow", function () {
       await client.close();
     }
   });
+
+  it("optimisticAck replies 'ok' immediately without an mcp-tool-response", async function () {
+    const flow = [
+      { id: "tab", type: "tab", label: "Test flow" },
+      {
+        id: "reg", z: "tab", type: "mcp-tool-registry", name: "ping-tool",
+        toolName: "ping", toolDescription: "Ping",
+        toolSchema: JSON.stringify({ type: "object", properties: {} }),
+        autoRegister: true, wires: [[]],
+      },
+      {
+        id: "srv", z: "tab", type: "mcp-flow-server", name: "e2e-opt",
+        serverName: "e2e-mcp-opt", serverPort: String(PORT + 2),
+        autoStart: false, enableCors: true, optimisticAck: true,
+        wires: [["h"]],
+      },
+      { id: "h", z: "tab", type: "helper" },
+    ];
+
+    await helper.load([flowServerNode, toolRegistryNode], flow);
+    const srv = helper.getNode("srv");
+    const h = helper.getNode("h");
+
+    // The flow receives the execute message but deliberately sends NO response;
+    // optimisticAck must still make the client get an immediate "ok".
+    let executed = false;
+    h.on("input", function (msg) {
+      if (msg.topic === "mcp-tool-execute") executed = true;
+    });
+
+    await new Promise((r) => setTimeout(r, 800));
+    await new Promise((resolve, reject) => {
+      const to = setTimeout(() => reject(new Error("server did not start")), 5000);
+      const onStarted = (msg) => {
+        if (msg.topic === "mcp-server-started") {
+          clearTimeout(to);
+          h.removeListener("input", onStarted);
+          resolve();
+        }
+      };
+      h.on("input", onStarted);
+      srv.receive({ topic: "start" });
+    });
+
+    const client = new Client({ name: "e2e-opt-client", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${PORT + 2}/mcp`)
+    );
+    await client.connect(transport);
+    try {
+      const res = await client.callTool({ name: "ping", arguments: {} });
+      expect(res.isError).to.not.equal(true);
+      expect(res.content[0].text).to.equal("ok");
+      expect(executed).to.equal(true);
+    } finally {
+      await client.close();
+    }
+  });
 });

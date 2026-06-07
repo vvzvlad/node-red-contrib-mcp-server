@@ -9,7 +9,8 @@
             serverName: {value: "node-red-mcp-server", required: true},
             serverPort: {value: 8001, required: true, validate: function(v) { var n = parseInt(v, 10); return !isNaN(n) && n > 0 && n < 65536; }},
             autoStart: {value: false},
-            enableCors: {value: true}
+            enableCors: {value: true},
+            optimisticAck: {value: false}
         },
         inputs: 1,
         outputs: 1,
@@ -155,6 +156,12 @@
         <span style="margin-left: 10px; font-size: 12px; color: #666;">Enable Cross-Origin Resource Sharing for web clients</span>
     </div>
 
+    <div class="form-row">
+        <label for="node-input-optimisticAck"><i class="fa fa-bolt"></i> Optimistic ack</label>
+        <input type="checkbox" id="node-input-optimisticAck" style="width: auto;">
+        <span style="margin-left: 10px; font-size: 12px; color: #666;">Reply "ok" to the client immediately, without waiting for an mcp-tool-response from the flow</span>
+    </div>
+
     <!-- Preset Buttons -->
     <hr>
     <div class="form-row">
@@ -194,6 +201,13 @@
         
         <dt>Enable CORS <span class="property-type">boolean</span></dt>
         <dd>Enable Cross-Origin Resource Sharing for web browser clients</dd>
+
+        <dt>Optimistic ack <span class="property-type">boolean</span></dt>
+        <dd>When enabled, a tool call replies "ok" to the MCP client immediately after the
+        <code>mcp-tool-execute</code> message is emitted, without waiting for an
+        <code>mcp-tool-response</code> from the flow. Useful for fire-and-forget device
+        control (lower latency, no response wiring needed). When disabled (default), the
+        server waits for <code>mcp-tool-response</code> (30s timeout).</dd>
     </dl>
 
     <h3>How It Works</h3>
