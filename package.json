@@ -1,6 +1,6 @@
 {
   "name": "node-red-contrib-mcp-server",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Node-RED nodes for building a spec-compliant Model Context Protocol (MCP) server over Streamable HTTP using the official @modelcontextprotocol/sdk, plus visual tool definition via flows.",
   "main": "mcp-flow-server.js",
   "scripts": {
