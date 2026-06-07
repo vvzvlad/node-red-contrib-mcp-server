@@ -3,10 +3,11 @@
     RED.nodes.registerType('mcp-flow-server', {
         category: 'mcp',
         color: '#9C27B0',
+        paletteLabel: 'MCP Flow Server',
         defaults: {
             name: {value: ""},
             serverName: {value: "node-red-mcp-server", required: true},
-            serverPort: {value: 8001, required: true, validate: function(v) { return v > 0 && v < 65536; }},
+            serverPort: {value: 8001, required: true, validate: function(v) { var n = parseInt(v, 10); return !isNaN(n) && n > 0 && n < 65536; }},
             autoStart: {value: false},
             enableCors: {value: true}
         },
