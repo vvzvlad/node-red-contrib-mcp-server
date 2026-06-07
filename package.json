@@ -1,10 +1,10 @@
 {
   "name": "node-red-contrib-mcp-server",
-  "version": "1.1.5",
-  "description": "A comprehensive Node-RED wrapper for Model Context Protocol (MCP) servers providing standardized AI agent tool interfaces, server lifecycle management, real-time communication capabilities, and visual MCP server creation",
-  "main": "mcp-server.js",
+  "version": "2.0.0",
+  "description": "Node-RED nodes for building a spec-compliant Model Context Protocol (MCP) server over Streamable HTTP using the official @modelcontextprotocol/sdk, plus visual tool definition via flows.",
+  "main": "mcp-flow-server.js",
   "scripts": {
-    "test": "node test.js",
+    "test": "mocha \"test/**/*.test.js\" --timeout 20000",
     "prepublishOnly": "echo 'Ready to publish node-red-contrib-mcp-server'"
   },
   "repository": {
@@ -15,17 +15,11 @@
     "node-red",
     "mcp",
     "model-context-protocol",
+    "streamable-http",
     "ai",
     "agent",
-    "fastmcp",
     "tools",
     "server",
-    "sse",
-    "websocket",
-    "automation",
-    "madness",
-    "interactive",
-    "omnispindle",
     "claude",
     "anthropic",
     "visual-programming",
@@ -39,6 +33,7 @@
   },
   "homepage": "https://github.com/DanEdens/node-red-contrib-mcp-server#readme",
   "node-red": {
+    "version": ">=3.0.0",
     "nodes": {
       "mcp-server": "mcp-server.js",
       "mcp-client": "mcp-client.js",
@@ -48,24 +43,29 @@
     }
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "express": "^4.21.2",
     "node-cache": "^5.1.2",
-    "axios": "^1.6.0",
-    "ws": "^8.14.0",
-    "eventsource": "^2.0.2",
-    "uuid": "^9.0.0",
-    "express": "^4.18.0"
+    "uuid": "^11.1.0",
+    "axios": "^1.7.9",
+    "ws": "^8.18.0",
+    "eventsource": "^2.0.2"
+  },
+  "devDependencies": {
+    "node-red": "^4.0.9",
+    "node-red-node-test-helper": "^0.3.4",
+    "mocha": "^10.8.2",
+    "chai": "^4.5.0"
   },
   "engines": {
-    "node": ">=16.0.0"
-  },
-  "peerDependencies": {
-    "node-red": ">=1.0.0"
+    "node": ">=18"
   },
   "files": [
     "*.js",
-    "*.html", 
+    "*.html",
     "*.md",
     "LICENSE",
+    "lib/",
     "examples/"
   ]
-} 
+}
