@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-06-07
+
+### Changed - Real, spec-compliant MCP server (BREAKING)
+- **MCP Flow Server** now runs a genuine MCP server over the **Streamable HTTP**
+  transport using the official `@modelcontextprotocol/sdk` (^1.29). Any standard
+  MCP client (e.g. the JS SDK `Client` + `StreamableHTTPClientTransport`, or the
+  Python `mcp` `streamablehttp_client`) can connect.
+- New module `lib/mcp-streamable.js` (no Node-RED dependency): a stateless
+  Streamable HTTP endpoint built on the low-level SDK `Server`. Tools are exposed
+  as **raw JSON Schema** (no Zod). A fresh `Server`+transport is created per request
+  (`sessionIdGenerator: undefined`); `tools/list` is read from the registry on every
+  call, so dynamic add/remove works without `listChanged`.
+- `POST /mcp` is the real transport; `GET`/`DELETE /mcp` return `405`. CORS now
+  includes the MCP headers (`mcp-session-id`, `mcp-protocol-version`) and exposes
+  `Mcp-Session-Id`. `/health` retained.
+
+### Removed
+- The hand-rolled `POST /mcp` method switch (`initialize`/`tools/list`/`tools/call`/
+  `*_tool`) and the fake `/sse` heartbeat endpoint — these were not MCP-compliant.
+
+### Fixed
+- Tool executions are now tracked in a per-node `Map` keyed by `executionId` and
+  resolved by a single persistent `input` handler, instead of attaching a new
+  `input` listener per call (which corrupted Node-RED 4.x done-accounting and leaked
+  listeners under concurrent calls). Pending calls are rejected and cleared on close.
+
+### Dependencies / compatibility
+- Installs cleanly on **Node.js 18** (v18.20.8) with **no `EBADENGINE`**. Removed the
+  `node-red` peerDependency (it auto-installed node-red, pulling
+  `validate-npm-package-name@7`, which requires Node ≥ 20); host compatibility is now
+  declared via the `node-red.version` field. Added `@modelcontextprotocol/sdk`, bumped
+  `uuid` to 11. `engines.node` is now `>=18`; `node-red.version` is `>=3.0.0`.
+
+### Node-RED API modernization
+- `close(removed, done)` and `input(msg, send, done)` signatures; admin endpoints
+  (`/mcp-flow-servers`, `/mcp-servers`, `/mcp-tools/:serverUrl`) wrapped in
+  `RED.auth.needsPermission`; `paletteLabel` added to the server/registry editors.
+
+### Tests
+- Test suite (mocha + chai + node-red-node-test-helper) driven by **real MCP
+  clients**: lib-level Streamable HTTP, a Node-RED e2e registry→server→flow bridge
+  (incl. concurrent calls), and error cases (unknown tool → `isError`, malformed JSON
+  → JSON-RPC parse error, `GET /mcp` → 405). Verified end-to-end against real
+  Node-RED 4.1.11 on Node 18 in Docker, with both the JS and Python official MCP
+  clients.
+
 ## [1.1.5] - 2024-12-28
 
 ### Fixed - Critical Import Fix

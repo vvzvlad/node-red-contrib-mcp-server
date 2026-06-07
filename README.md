@@ -1,6 +1,77 @@
 # node-red-contrib-mcp-server
 
-A comprehensive Node-RED contribution package for Model Context Protocol (MCP) server integration. This package provides nodes for running MCP servers, connecting to them as clients, and invoking specific MCP tools directly from Node-RED flows.
+A Node-RED contribution package for the Model Context Protocol (MCP). Its headline
+node, **MCP Flow Server**, runs a **real, spec-compliant MCP server over the
+Streamable HTTP transport** (built on the official
+[`@modelcontextprotocol/sdk`](https://www.npmjs.com/package/@modelcontextprotocol/sdk)),
+so any standard MCP client can connect to it. Tools are defined visually with
+Node-RED nodes. The package also includes client/tool nodes for talking to
+external MCP servers.
+
+> **v2.0 — now a genuine MCP server.** Earlier versions hand-rolled a `POST /mcp`
+> JSON-RPC switch and a fake `/sse` heartbeat, which standard MCP clients could not
+> use. v2.0 replaces that with the official SDK's **Streamable HTTP** transport
+> (stateless): real session/transport handling on `POST /mcp`, `GET`/`DELETE /mcp`
+> returning `405`, MCP CORS headers, and tool results in proper MCP shape. See
+> [CHANGELOG.md](CHANGELOG.md). This is a breaking change — see *Migration* below.
+
+## The spec-compliant MCP Flow Server (Streamable HTTP)
+
+Build an MCP server entirely from Node-RED flows:
+
+1. Drop an **MCP Tool Registry** node for each tool. Give it a name, description and
+   a raw **JSON Schema** for its input. It registers the tool with the server.
+2. Drop an **MCP Flow Server** node. Set a port (default `8001`) and (optionally)
+   Auto Start. It serves the MCP endpoint at `POST http://<host>:<port>/mcp`.
+3. Wire the **MCP Flow Server** output to your flow logic. For every tool call the
+   server emits a message `{ topic: 'mcp-tool-execute', payload: { toolName,
+   arguments, executionId } }`. Compute the result and send a message back **into
+   the MCP Flow Server node's input**:
+   `{ topic: 'mcp-tool-response', payload: { executionId, result } }`
+   (or `{ executionId, error }`). The call resolves with that result (30s timeout).
+
+Tools are read from the registry on every `tools/list`, so adding/removing registry
+nodes changes the advertised tools immediately (the transport is stateless).
+
+### Connect with a standard MCP client
+
+**JavaScript (`@modelcontextprotocol/sdk`):**
+```js
+const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
+const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
+
+const client = new Client({ name: 'my-client', version: '1.0.0' });
+await client.connect(new StreamableHTTPClientTransport(new URL('http://localhost:8001/mcp')));
+
+console.log(await client.listTools());
+console.log(await client.callTool({ name: 'echo', arguments: { text: 'hi' } }));
+await client.close();
+```
+
+**Python (`mcp` — `streamablehttp_client`):**
+```python
+import asyncio
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+async def main():
+    async with streamablehttp_client("http://localhost:8001/mcp") as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            print(await session.list_tools())
+            print(await session.call_tool("echo", {"text": "hi"}))
+
+asyncio.run(main())
+```
+
+### Migration from 1.x
+
+- The fake `/sse` endpoint and the custom `POST /mcp` method switch are gone. Use a
+  real MCP client over Streamable HTTP at `POST /mcp` instead.
+- The `mcp-flow-server` / `mcp-tool-registry` node types, their config fields and the
+  flow-execution contract (`mcp-tool-execute` → `mcp-tool-response`) are unchanged,
+  so existing flow-server/registry flows keep working.
+- Requires Node.js ≥ 18 and Node-RED ≥ 3.
 
 ## Features
 
@@ -272,16 +343,23 @@ if (msg.topic === "error") {
 
 ## API Endpoints
 
-The package exposes additional HTTP endpoints:
+The MCP Flow Server serves the spec endpoint:
 
+- `POST /mcp` — the real MCP Streamable HTTP transport (standard MCP clients)
+- `GET /mcp`, `DELETE /mcp` — `405 Method Not Allowed` (stateless server)
+- `GET /health` — health/uptime/registered-tool count
+
+Admin (editor) endpoints, each protected with `RED.auth.needsPermission`:
+
+- `GET /mcp-flow-servers` — list running flow servers
 - `GET /mcp-servers` - List running MCP servers
 - `GET /mcp-tools/:serverUrl` - Get available tools from server
 
 ## Requirements
 
 ### System Requirements
-- Node.js 16.0.0 or higher
-- Node-RED 1.0.0 or higher
+- Node.js 18 or higher
+- Node-RED 3.0.0 or higher
 
 ### MCP Server Requirements
 - **Python servers**: Python 3.8+ with required packages
@@ -289,11 +367,14 @@ The package exposes additional HTTP endpoints:
 - **Custom servers**: Executable in PATH or full path specified
 
 ### Dependencies
-- `axios` - HTTP client
-- `ws` - WebSocket support
-- `eventsource` - Server-Sent Events
+- `@modelcontextprotocol/sdk` - official MCP SDK (Streamable HTTP server/client)
+- `express` - HTTP server for the MCP endpoint
+- `node-cache` - tool/server registry
 - `uuid` - Unique ID generation
-- `node-cache` - Server instance caching
+- `axios`, `ws`, `eventsource` - used by the external client/tool nodes
+
+All dependencies are compatible with Node.js 18; the package installs cleanly on
+Node 18 with no `EBADENGINE` warnings.
 
 ## Troubleshooting
 
