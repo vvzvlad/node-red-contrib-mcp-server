@@ -168,13 +168,10 @@ module.exports = function (RED)
             setTimeout(() => node.registerTool(), 500);
         }
 
-        // Cleanup on (re)deploy / shutdown. Node-RED 1.x+ close signature.
+        // Cleanup on (re)deploy / shutdown. Node-RED 1.x+ close signature
+        // (removed, done): the runtime always passes both for a 2-arg callback.
         node.on('close', function (removed, done)
         {
-            if (typeof removed === 'function')
-            {
-                done = removed;
-            }
             if (node.isRegistered)
             {
                 node.unregisterTool();

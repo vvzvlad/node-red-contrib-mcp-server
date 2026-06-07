@@ -29,6 +29,11 @@ module.exports = function (RED)
         node.app = null;
         node.isRunning = false;
         node.serverId = uuidv4();
+        // In-flight tool executions: executionId -> { resolve, reject, timeout }.
+        // A single persistent 'input' handler resolves these (see below); we must
+        // NOT add a fresh node.on('input') per call — that breaks Node-RED's
+        // done-accounting and leaks listeners under concurrent calls.
+        node._pending = new Map();
 
         node.status({ fill: "grey", shape: "ring", text: "stopped" });
 
@@ -100,46 +105,26 @@ module.exports = function (RED)
         };
 
         // Execute a registered tool by emitting a message into the flow and
-        // resolving when the matching mcp-tool-response comes back to this node.
+        // resolving when the matching mcp-tool-response comes back to this node's
+        // single 'input' handler (which looks the call up in node._pending).
         node.executeToolFlow = function (tool, args)
         {
             return new Promise((resolve, reject) =>
             {
-                const executionMsg = {
-                    topic: 'mcp-tool-execute',
-                    payload: {
-                        toolName: tool.name,
-                        arguments: args,
-                        executionId: uuidv4()
-                    }
-                };
+                const executionId = uuidv4();
 
                 const timeout = setTimeout(() =>
                 {
-                    node.removeListener('input', responseHandler);
+                    node._pending.delete(executionId);
                     reject(new Error('Tool execution timeout'));
                 }, 30000);
 
-                const responseHandler = (msg) =>
-                {
-                    if (msg.topic === 'mcp-tool-response' &&
-                        msg.payload && msg.payload.executionId === executionMsg.payload.executionId)
-                    {
-                        clearTimeout(timeout);
-                        node.removeListener('input', responseHandler);
+                node._pending.set(executionId, { resolve, reject, timeout });
 
-                        if (msg.payload.error)
-                        {
-                            reject(new Error(msg.payload.error));
-                        } else
-                        {
-                            resolve(msg.payload.result);
-                        }
-                    }
-                };
-
-                node.on('input', responseHandler);
-                node.send(executionMsg);
+                node.send({
+                    topic: 'mcp-tool-execute',
+                    payload: { toolName: tool.name, arguments: args, executionId }
+                });
             });
         };
 
@@ -239,12 +224,26 @@ module.exports = function (RED)
             }
         };
 
-        // Handle input messages (lifecycle commands + tool responses).
+        // Single persistent input handler: resolves in-flight tool executions and
+        // handles lifecycle commands.
         node.on('input', function (msg, send, done)
         {
-            // Tool responses are consumed by executeToolFlow's listener; ignore here.
-            if (msg.topic === 'mcp-tool-response')
+            // Tool response coming back from the flow -> resolve the pending call.
+            if (msg.topic === 'mcp-tool-response' && msg.payload)
             {
+                const pending = node._pending.get(msg.payload.executionId);
+                if (pending)
+                {
+                    clearTimeout(pending.timeout);
+                    node._pending.delete(msg.payload.executionId);
+                    if (msg.payload.error)
+                    {
+                        pending.reject(new Error(msg.payload.error));
+                    } else
+                    {
+                        pending.resolve(msg.payload.result);
+                    }
+                }
                 if (done) done();
                 return;
             }
@@ -262,10 +261,9 @@ module.exports = function (RED)
                     break;
 
                 case 'restart':
-                    node.stopServer(() =>
-                    {
-                        setTimeout(() => node.startServer(), 1000);
-                    });
+                    // The stopServer callback fires once the port is released, so
+                    // start again immediately rather than guessing a delay.
+                    node.stopServer(() => node.startServer());
                     break;
 
                 case 'status':
@@ -293,14 +291,18 @@ module.exports = function (RED)
             setTimeout(() => node.startServer(), 1000);
         }
 
-        // Cleanup on (re)deploy / shutdown. Node-RED 1.x+ close signature.
+        // Cleanup on (re)deploy / shutdown. Node-RED 1.x+ close signature
+        // (removed, done): the runtime always passes both for a 2-arg callback.
         node.on('close', function (removed, done)
         {
-            // The second arg is the done callback when the runtime passes "removed".
-            if (typeof removed === 'function')
+            // Reject any in-flight tool executions and clear their timers.
+            node._pending.forEach((p) =>
             {
-                done = removed;
-            }
+                clearTimeout(p.timeout);
+                p.reject(new Error('Server closing'));
+            });
+            node._pending.clear();
+
             if (node.isRunning)
             {
                 node.stopServer(() => done());
