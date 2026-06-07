@@ -6,8 +6,9 @@ module.exports = function (RED)
     const express = require('express');
     const { v4: uuidv4 } = require('uuid');
     const NodeCache = require('node-cache');
+    const { attachMcpStreamableEndpoint } = require('./lib/mcp-streamable.js');
 
-    // Global registry for tools across all flow server instances
+    // Global registry for tools across all flow server instances.
     const toolRegistry = new NodeCache({ stdTTL: 0 });
     const serverInstances = new NodeCache({ stdTTL: 0 });
 
@@ -18,9 +19,10 @@ module.exports = function (RED)
 
         // Configuration
         node.serverName = config.serverName || "node-red-mcp-server";
-        node.serverPort = config.serverPort || 8001;
+        node.serverPort = parseInt(config.serverPort, 10) || 8001;
         node.autoStart = config.autoStart || false;
-        node.enableCors = config.enableCors || true;
+        // Preserve the original (truthy-by-default) CORS behaviour.
+        node.enableCors = config.enableCors === undefined ? true : config.enableCors;
 
         // Runtime state
         node.httpServer = null;
@@ -28,22 +30,24 @@ module.exports = function (RED)
         node.isRunning = false;
         node.serverId = uuidv4();
 
-        // Set initial status
         node.status({ fill: "grey", shape: "ring", text: "stopped" });
 
-        // Initialize Express app
+        // Initialize the Express app that hosts the MCP Streamable HTTP endpoint.
         node.initializeServer = function ()
         {
             node.app = express();
 
-            // Enable CORS if configured
+            // CORS, including the headers required by the MCP Streamable HTTP
+            // transport (session id + protocol version).
             if (node.enableCors)
             {
                 node.app.use((req, res, next) =>
                 {
                     res.header('Access-Control-Allow-Origin', '*');
-                    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-                    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+                    res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+                    res.header('Access-Control-Allow-Headers',
+                        'Content-Type, Authorization, mcp-session-id, mcp-protocol-version');
+                    res.header('Access-Control-Expose-Headers', 'Mcp-Session-Id');
                     if (req.method === 'OPTIONS')
                     {
                         res.sendStatus(200);
@@ -54,234 +58,53 @@ module.exports = function (RED)
                 });
             }
 
-            // JSON parsing middleware
+            // JSON body parsing (required by the Streamable HTTP transport).
             node.app.use(express.json({ limit: '10mb' }));
 
-            // Health check endpoint
+            // Health check endpoint.
             node.app.get('/health', (req, res) =>
             {
                 res.json({
                     status: 'healthy',
                     server: node.serverName,
                     uptime: process.uptime(),
-                    tools: Object.keys(toolRegistry.keys()).length
+                    tools: toolRegistry.keys().length
                 });
             });
 
-            // MCP JSON-RPC endpoint
-            node.app.post('/mcp', async (req, res) =>
-            {
-                try
+            // Real, spec-compliant MCP endpoint on POST /mcp (GET/DELETE -> 405).
+            // Tools are read from the registry on every request, so dynamic
+            // add/remove works without listChanged notifications (stateless).
+            attachMcpStreamableEndpoint(node.app, {
+                serverInfo: { name: node.serverName, version: '2.0.0' },
+                listTools: async () => toolRegistry.keys().map((k) =>
                 {
-                    const request = req.body;
-                    node.log(`MCP Request: ${JSON.stringify(request)}`);
-
-                    // Handle different MCP methods
-                    switch (request.method)
-                    {
-                        case 'tools/list':
-                            node.handleToolsList(request, res);
-                            break;
-
-                        case 'tools/call':
-                            await node.handleToolCall(request, res);
-                            break;
-
-                        case 'initialize':
-                            node.handleInitialize(request, res);
-                            break;
-
-                        default:
-                            if (request.method && request.method.endsWith('_tool'))
-                            {
-                                // Direct tool call
-                                await node.handleDirectToolCall(request, res);
-                            } else
-                            {
-                                res.json({
-                                    jsonrpc: "2.0",
-                                    id: request.id,
-                                    error: {
-                                        code: -32601,
-                                        message: `Method not found: ${request.method}`
-                                    }
-                                });
-                            }
-                    }
-                } catch (error)
+                    const t = toolRegistry.get(k);
+                    return {
+                        name: t.name,
+                        description: t.description,
+                        inputSchema: t.inputSchema || { type: 'object', properties: {} }
+                    };
+                }),
+                callTool: async (name, args) =>
                 {
-                    node.error(`MCP request error: ${error.message}`);
-                    res.status(500).json({
-                        jsonrpc: "2.0",
-                        id: req.body.id,
-                        error: {
-                            code: -32603,
-                            message: "Internal error",
-                            data: error.message
-                        }
-                    });
-                }
-            });
-
-            // Server-Sent Events endpoint
-            node.app.get('/sse', (req, res) =>
-            {
-                res.writeHead(200, {
-                    'Content-Type': 'text/event-stream',
-                    'Cache-Control': 'no-cache',
-                    'Connection': 'keep-alive',
-                    'Access-Control-Allow-Origin': '*'
-                });
-
-                res.write('data: {"type":"connected","server":"' + node.serverName + '"}\n\n');
-
-                // Keep connection alive
-                const keepAlive = setInterval(() =>
-                {
-                    res.write('data: {"type":"heartbeat","timestamp":"' + new Date().toISOString() + '"}\n\n');
-                }, 30000);
-
-                req.on('close', () =>
-                {
-                    clearInterval(keepAlive);
-                });
-            });
-        };
-
-        // Handle tools/list method
-        node.handleToolsList = function (request, res)
-        {
-            const tools = [];
-            const toolKeys = toolRegistry.keys();
-
-            toolKeys.forEach(key =>
-            {
-                const tool = toolRegistry.get(key);
-                if (tool)
-                {
-                    tools.push({
-                        name: tool.name,
-                        description: tool.description,
-                        inputSchema: tool.inputSchema
-                    });
-                }
-            });
-
-            res.json({
-                jsonrpc: "2.0",
-                id: request.id,
-                result: { tools: tools }
-            });
-        };
-
-        // Handle tools/call method
-        node.handleToolCall = async function (request, res)
-        {
-            const { name, arguments: args } = request.params;
-            const tool = toolRegistry.get(name);
-
-            if (!tool)
-            {
-                res.json({
-                    jsonrpc: "2.0",
-                    id: request.id,
-                    error: {
-                        code: -32602,
-                        message: `Tool not found: ${name}`
-                    }
-                });
-                return;
-            }
-
-            try
-            {
-                const result = await node.executeToolFlow(tool, args);
-                res.json({
-                    jsonrpc: "2.0",
-                    id: request.id,
-                    result: result
-                });
-            } catch (error)
-            {
-                res.json({
-                    jsonrpc: "2.0",
-                    id: request.id,
-                    error: {
-                        code: -32603,
-                        message: error.message
-                    }
-                });
-            }
-        };
-
-        // Handle direct tool calls (method ends with _tool)
-        node.handleDirectToolCall = async function (request, res)
-        {
-            const toolName = request.method;
-            const tool = toolRegistry.get(toolName);
-
-            if (!tool)
-            {
-                res.json({
-                    jsonrpc: "2.0",
-                    id: request.id,
-                    error: {
-                        code: -32602,
-                        message: `Tool not found: ${toolName}`
-                    }
-                });
-                return;
-            }
-
-            try
-            {
-                const result = await node.executeToolFlow(tool, request.params || {});
-                res.json({
-                    jsonrpc: "2.0",
-                    id: request.id,
-                    result: result
-                });
-            } catch (error)
-            {
-                res.json({
-                    jsonrpc: "2.0",
-                    id: request.id,
-                    error: {
-                        code: -32603,
-                        message: error.message
-                    }
-                });
-            }
-        };
-
-        // Handle initialize method
-        node.handleInitialize = function (request, res)
-        {
-            res.json({
-                jsonrpc: "2.0",
-                id: request.id,
-                result: {
-                    protocolVersion: "2024-11-05",
-                    capabilities: {
-                        tools: {
-                            listChanged: true
-                        }
-                    },
-                    serverInfo: {
-                        name: node.serverName,
-                        version: "1.0.0",
-                        description: "Node-RED MCP Flow Server"
-                    }
+                    const t = toolRegistry.get(name);
+                    if (!t) throw new Error('Tool not found: ' + name);
+                    return node.executeToolFlow(t, args);
+                },
+                logger: {
+                    error: (m) => node.error(m),
+                    log: (m) => node.log(m)
                 }
             });
         };
 
-        // Execute tool flow
+        // Execute a registered tool by emitting a message into the flow and
+        // resolving when the matching mcp-tool-response comes back to this node.
         node.executeToolFlow = function (tool, args)
         {
             return new Promise((resolve, reject) =>
             {
-                // Send execution request to tool handler nodes
                 const executionMsg = {
                     topic: 'mcp-tool-execute',
                     payload: {
@@ -291,17 +114,16 @@ module.exports = function (RED)
                     }
                 };
 
-                // Set up timeout
                 const timeout = setTimeout(() =>
                 {
+                    node.removeListener('input', responseHandler);
                     reject(new Error('Tool execution timeout'));
                 }, 30000);
 
-                // Listen for response
                 const responseHandler = (msg) =>
                 {
                     if (msg.topic === 'mcp-tool-response' &&
-                        msg.payload.executionId === executionMsg.payload.executionId)
+                        msg.payload && msg.payload.executionId === executionMsg.payload.executionId)
                     {
                         clearTimeout(timeout);
                         node.removeListener('input', responseHandler);
@@ -317,13 +139,11 @@ module.exports = function (RED)
                 };
 
                 node.on('input', responseHandler);
-
-                // Send execution request
                 node.send(executionMsg);
             });
         };
 
-        // Start server
+        // Start the HTTP server.
         node.startServer = function (callback = () => { })
         {
             if (node.isRunning)
@@ -345,19 +165,17 @@ module.exports = function (RED)
                     node.isRunning = true;
                     node.status({ fill: "green", shape: "dot", text: `running :${node.serverPort}` });
 
-                    // Store in global registry - use only primitive values to avoid cloning issues
-                    const cacheData = {
+                    // Store only primitives to avoid NodeCache cloning issues.
+                    serverInstances.set(node.serverId, {
                         nodeId: String(node.id),
                         serverName: String(node.serverName),
                         port: Number(node.serverPort),
                         startTime: new Date().toISOString(),
-                        isRunning: Boolean(true)
-                    };
-                    serverInstances.set(node.serverId, cacheData);
+                        isRunning: true
+                    });
 
-                    node.log(`MCP Flow Server started on port ${node.serverPort}`);
+                    node.log(`MCP Flow Server started on port ${node.serverPort} (Streamable HTTP at POST /mcp)`);
 
-                    // Send started message
                     node.send({
                         topic: "mcp-server-started",
                         payload: {
@@ -386,7 +204,7 @@ module.exports = function (RED)
             }
         };
 
-        // Stop server
+        // Stop the HTTP server.
         node.stopServer = function (callback = () => { })
         {
             if (!node.isRunning)
@@ -402,6 +220,7 @@ module.exports = function (RED)
                 node.httpServer.close(() =>
                 {
                     node.isRunning = false;
+                    node.httpServer = null;
                     node.status({ fill: "grey", shape: "ring", text: "stopped" });
                     serverInstances.del(node.serverId);
 
@@ -420,10 +239,17 @@ module.exports = function (RED)
             }
         };
 
-        // Handle input messages
-        node.on('input', function (msg)
+        // Handle input messages (lifecycle commands + tool responses).
+        node.on('input', function (msg, send, done)
         {
-            const command = msg.topic || msg.payload.command;
+            // Tool responses are consumed by executeToolFlow's listener; ignore here.
+            if (msg.topic === 'mcp-tool-response')
+            {
+                if (done) done();
+                return;
+            }
+
+            const command = msg.topic || (msg.payload && msg.payload.command);
 
             switch (command)
             {
@@ -452,18 +278,29 @@ module.exports = function (RED)
                     };
                     node.send(msg);
                     break;
+
+                default:
+                    // Unknown command: nothing to do.
+                    break;
             }
+
+            if (done) done();
         });
 
-        // Auto-start if configured
+        // Auto-start if configured.
         if (node.autoStart)
         {
             setTimeout(() => node.startServer(), 1000);
         }
 
-        // Cleanup on node close
-        node.on('close', function (done)
+        // Cleanup on (re)deploy / shutdown. Node-RED 1.x+ close signature.
+        node.on('close', function (removed, done)
         {
+            // The second arg is the done callback when the runtime passes "removed".
+            if (typeof removed === 'function')
+            {
+                done = removed;
+            }
             if (node.isRunning)
             {
                 node.stopServer(() => done());
@@ -474,10 +311,9 @@ module.exports = function (RED)
         });
     }
 
-    // Register the node
     RED.nodes.registerType("mcp-flow-server", MCPFlowServerNode);
 
-    // Expose tool registry functions for other nodes
+    // Bridge the tool-registry node events into the global registry.
     RED.events.on('mcp-tool-register', (toolDef) =>
     {
         toolRegistry.set(toolDef.name, toolDef);
@@ -488,8 +324,8 @@ module.exports = function (RED)
         toolRegistry.del(toolName);
     });
 
-    // Admin endpoint to list flow servers
-    RED.httpAdmin.get("/mcp-flow-servers", function (req, res)
+    // Admin endpoint to list running flow servers (auth-protected).
+    RED.httpAdmin.get("/mcp-flow-servers", RED.auth.needsPermission("mcp-flow-server.read"), function (req, res)
     {
         const servers = [];
         serverInstances.keys().forEach(key =>
@@ -509,4 +345,4 @@ module.exports = function (RED)
         });
         res.json({ servers });
     });
-}; 
+};
