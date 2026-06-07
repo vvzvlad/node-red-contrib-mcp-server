@@ -410,8 +410,8 @@ module.exports = function (RED)
     // Register the node
     RED.nodes.registerType("mcp-server", MCPServerNode);
 
-    // Add admin endpoint to list running servers
-    RED.httpAdmin.get("/mcp-servers", function (req, res)
+    // Add admin endpoint to list running servers (auth-protected)
+    RED.httpAdmin.get("/mcp-servers", RED.auth.needsPermission("mcp-server.read"), function (req, res)
     {
         const servers = [];
         serverCache.keys().forEach(key =>

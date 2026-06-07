@@ -113,9 +113,9 @@ module.exports = function (RED)
         };
 
         // Handle input messages
-        node.on('input', function (msg)
+        node.on('input', function (msg, send, done)
         {
-            const command = msg.topic || msg.payload.command;
+            const command = msg.topic || (msg.payload && msg.payload.command);
 
             switch (command)
             {
@@ -158,6 +158,8 @@ module.exports = function (RED)
                 default:
                     node.warn(`Unknown command: ${command}`);
             }
+
+            if (done) done();
         });
 
         // Auto-register if configured
@@ -166,9 +168,13 @@ module.exports = function (RED)
             setTimeout(() => node.registerTool(), 500);
         }
 
-        // Cleanup on node close
-        node.on('close', function (done)
+        // Cleanup on (re)deploy / shutdown. Node-RED 1.x+ close signature.
+        node.on('close', function (removed, done)
         {
+            if (typeof removed === 'function')
+            {
+                done = removed;
+            }
             if (node.isRegistered)
             {
                 node.unregisterTool();

@@ -158,8 +158,8 @@ module.exports = function (RED)
     // Register the node
     RED.nodes.registerType("mcp-tool", MCPToolNode);
 
-    // Get available tools from server
-    RED.httpAdmin.get("/mcp-tools/:serverUrl", function (req, res)
+    // Get available tools from server (auth-protected)
+    RED.httpAdmin.get("/mcp-tools/:serverUrl", RED.auth.needsPermission("mcp-tool.read"), function (req, res)
     {
         const serverUrl = decodeURIComponent(req.params.serverUrl);
 
