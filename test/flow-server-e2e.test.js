@@ -137,4 +137,98 @@ describe("Node-RED e2e: registry -> flow-server -> flow", function () {
       await client.close();
     }
   });
+
+  it("handles CONCURRENT tool calls through the node (exercises _pending map)", async function () {
+    const flow = [
+      { id: "tab", type: "tab", label: "Test flow" },
+      {
+        id: "reg",
+        z: "tab",
+        type: "mcp-tool-registry",
+        name: "add-tool",
+        toolName: "add",
+        toolDescription: "Add two numbers",
+        toolSchema: JSON.stringify({
+          type: "object",
+          properties: { a: { type: "number" }, b: { type: "number" } },
+          required: ["a", "b"],
+        }),
+        autoRegister: true,
+        wires: [[]],
+      },
+      {
+        id: "srv",
+        z: "tab",
+        type: "mcp-flow-server",
+        name: "e2e-server-2",
+        serverName: "e2e-mcp-2",
+        serverPort: String(PORT + 1),
+        autoStart: false,
+        enableCors: true,
+        wires: [["h"]],
+      },
+      { id: "h", z: "tab", type: "helper" },
+    ];
+
+    await helper.load([flowServerNode, toolRegistryNode], flow);
+    const srv = helper.getNode("srv");
+    const h = helper.getNode("h");
+
+    // Respond to each execute request after a randomized small delay, so
+    // completion order differs from request order — proving calls are tracked
+    // independently by executionId rather than via a single shared listener.
+    h.on("input", function (msg) {
+      if (msg.topic === "mcp-tool-execute") {
+        const { arguments: args, executionId } = msg.payload;
+        const delay = 20 + ((args.a * 7) % 60);
+        setTimeout(() => {
+          srv.receive({
+            topic: "mcp-tool-response",
+            payload: { executionId, result: { sum: args.a + args.b } },
+          });
+        }, delay);
+      }
+    });
+
+    await new Promise((r) => setTimeout(r, 800));
+    await new Promise((resolve, reject) => {
+      const to = setTimeout(() => reject(new Error("server did not start")), 5000);
+      const onStarted = (msg) => {
+        if (msg.topic === "mcp-server-started") {
+          clearTimeout(to);
+          h.removeListener("input", onStarted);
+          resolve();
+        }
+      };
+      h.on("input", onStarted);
+      srv.receive({ topic: "start" });
+    });
+
+    const client = new Client({ name: "e2e-client-2", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`http://127.0.0.1:${PORT + 1}/mcp`)
+    );
+    await client.connect(transport);
+
+    try {
+      const inputs = [
+        { a: 1, b: 1 },
+        { a: 2, b: 3 },
+        { a: 10, b: 20 },
+        { a: 7, b: 8 },
+        { a: 100, b: 1 },
+      ];
+      const results = await Promise.all(
+        inputs.map((args) => client.callTool({ name: "add", arguments: args }))
+      );
+      results.forEach((res, i) => {
+        expect(res.isError).to.not.equal(true);
+        expect(JSON.parse(res.content[0].text)).to.deep.equal({
+          sum: inputs[i].a + inputs[i].b,
+        });
+      });
+    } finally {
+      await client.close();
+    }
+  });
 });
