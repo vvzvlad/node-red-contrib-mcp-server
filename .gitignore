@@ -74,7 +74,5 @@ jspm_packages/
 ehthumbs.db
 Thumbs.db
 
-# Test files
-test/
-*.test.js
-*.spec.js 
+# Autopilot working state (local only)
+.autopilot/
